@@ -17,7 +17,7 @@ DSTCHAIN_RPC="http://localhost:26657"
 DSTCHAIN_REST="http://localhost:1317"
 ORGCHAIN_RPC="http://localhost:26659"
 ORGCHAIN_REST="http://localhost:1319"
-SIGNER_PORT="8080"
+SIGNER_PORT="8081"
 
 log() {
     echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
