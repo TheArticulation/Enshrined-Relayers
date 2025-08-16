@@ -109,12 +109,12 @@ setup_dstchain_genesis() {
     addr=$(dstchaind keys show "$keyname" -a --keyring-backend test --home "$home_dir")
 
     # Add generous balances
-    dstchaind add-genesis-account "$addr" 200000000stake,20000000token --home "$home_dir" >/dev/null 2>&1 || true
+    dstchaind genesis add-genesis-account "$addr" 200000000stake,20000000token --home "$home_dir" >/dev/null 2>&1 || true
 
     # Create a gentx if not already present
-    if [ ! -d "$home_dir/config/gentx" ] || [ -z "$(ls -A "$home_dir/config/gentx")" ]; then
-        dstchaind gentx "$keyname" 100000000stake --chain-id dstchain --keyring-backend test --home "$home_dir" >/dev/null 2>&1
-        dstchaind collect-gentxs --home "$home_dir" >/dev/null 2>&1
+    if [ ! -d "$home_dir/config/gentx" ] || [ -z "$(ls -A "$home_dir/config/gentx" 2>/dev/null)" ]; then
+        dstchaind genesis gentx "$keyname" 100000000stake --chain-id dstchain --keyring-backend test --home "$home_dir" >/dev/null 2>&1
+        dstchaind genesis collect-gentxs --home "$home_dir" >/dev/null 2>&1
     fi
 
     success "dstchain genesis initialized with single validator"
