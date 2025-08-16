@@ -1,0 +1,38 @@
+{
+  "name": "hyperlane-relayer",
+  "version": "1.0.0",
+  "description": "Hyperlane relayer for Enshrined Validators",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "lint": "eslint src/**/*.ts",
+    "test": "jest"
+  },
+  "keywords": [
+    "cosmos",
+    "hyperlane",
+    "relayer",
+    "enshrined-validators"
+  ],
+  "author": "Enshrined Relayers Team",
+  "license": "MIT",
+  "dependencies": {
+    "@cosmjs/cosmwasm-stargate": "^0.31.0",
+    "@cosmjs/proto-signing": "^0.31.0",
+    "@cosmjs/stargate": "^0.31.0",
+    "@cosmjs/tendermint-rpc": "^0.31.0",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.0",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.50.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}
