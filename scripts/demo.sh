@@ -109,12 +109,53 @@ setup_dstchain_genesis() {
     addr=$(dstchaind keys show "$keyname" -a --keyring-backend test --home "$home_dir")
 
     # Add generous balances
-    dstchaind genesis add-genesis-account "$addr" 200000000stake,20000000token --home "$home_dir" >/dev/null 2>&1 || true
+    if ! jq -e --arg a "$addr" '.app_state.bank.balances[] | select(.address==$a)' "$home_dir/config/genesis.json" >/dev/null 2>&1; then
+        dstchaind genesis add-genesis-account "$addr" 200000000stake,20000000token --home "$home_dir" >/dev/null 2>&1 || true
+    fi
 
-    # Create a gentx if not already present
-    if [ ! -d "$home_dir/config/gentx" ] || [ -z "$(ls -A "$home_dir/config/gentx" 2>/dev/null)" ]; then
-        dstchaind genesis gentx "$keyname" 100000000stake --chain-id dstchain --keyring-backend test --home "$home_dir" >/dev/null 2>&1
-        dstchaind genesis collect-gentxs --home "$home_dir" >/dev/null 2>&1
+    # Create gentx directory fresh and generate
+    rm -rf "$home_dir/config/gentx" && mkdir -p "$home_dir/config/gentx"
+    dstchaind genesis gentx "$keyname" 100000000stake --chain-id dstchain --keyring-backend test --home "$home_dir" --from "$keyname" --output-document "$home_dir/config/gentx/gentx.json" >/dev/null 2>&1
+    dstchaind genesis collect-gentxs --home "$home_dir" >/dev/null 2>&1
+
+    # If staking.validators still empty, patch genesis to include bonded validator
+    local validators_count
+    validators_count=$(jq '.app_state.staking.validators | length' "$home_dir/config/genesis.json")
+    if [ "$validators_count" = "0" ]; then
+        log "Patching genesis to inject bonded validator..."
+        local valoper
+        valoper=$(jq -r '.app_state.genutil.gen_txs[0].body.messages[0].validator_address' "$home_dir/config/genesis.json")
+        local cons_key
+        cons_key=$(jq -r '.app_state.genutil.gen_txs[0].body.messages[0].pubkey.key' "$home_dir/config/genesis.json")
+        local power="100000000"
+        local shares="100000000.000000000000000000"
+        jq --arg valoper "$valoper" \
+           --arg conskey "$cons_key" \
+           --arg power "$power" \
+           --arg shares "$shares" \
+           --arg del "$addr" \
+           '.app_state.staking.validators = [
+              {
+                "operator_address": $valoper,
+                "consensus_pubkey": {"@type":"/cosmos.crypto.ed25519.PubKey","key": $conskey},
+                "jailed": false,
+                "status": "BOND_STATUS_BONDED",
+                "tokens": $power,
+                "delegator_shares": $shares,
+                "description": {"moniker":"demo","identity":"","website":"","security_contact":"","details":""},
+                "unbonding_height": "0",
+                "unbonding_time": "0001-01-01T00:00:00Z",
+                "commission": {"commission_rates": {"rate":"0.100000000000000000","max_rate":"0.200000000000000000","max_change_rate":"0.010000000000000000"}, "update_time":"0001-01-01T00:00:00Z"},
+                "min_self_delegation": "1"
+              }
+            ]
+            | .app_state.staking.delegations = [
+              {"delegator_address": $del, "validator_address": $valoper, "shares": $shares}
+            ]
+            | .app_state.staking.last_total_power = $power
+            | .app_state.staking.last_validator_powers = [ {"address": $valoper, "power": $power} ]' "$home_dir/config/genesis.json" > "$home_dir/config/genesis.patched.json"
+        mv "$home_dir/config/genesis.patched.json" "$home_dir/config/genesis.json"
+        success "Genesis patched"
     fi
 
     success "dstchain genesis initialized with single validator"
