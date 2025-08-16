@@ -19,6 +19,12 @@ ORGCHAIN_REST="http://localhost:1317"
 DSTCHAIN_REST="http://localhost:1319"
 SIGNER_PORT="8080"
 
+# Large amounts to satisfy power reduction
+STAKE_FUND="2000000000000000000stake"
+STAKE_SELF="1000000000000000000stake"
+STAKE_TOKENS="1000000000000000000"
+STAKE_SHARES="1000000000000000000.000000000000000000"
+
 log() {
     echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
 }
@@ -110,12 +116,12 @@ setup_dstchain_genesis() {
 
     # Add generous balances
     if ! jq -e --arg a "$addr" '.app_state.bank.balances[] | select(.address==$a)' "$home_dir/config/genesis.json" >/dev/null 2>&1; then
-        dstchaind genesis add-genesis-account "$addr" 200000000stake,20000000token --home "$home_dir" >/dev/null 2>&1 || true
+        dstchaind genesis add-genesis-account "$addr" ${STAKE_FUND},20000000token --home "$home_dir" >/dev/null 2>&1 || true
     fi
 
     # Create gentx directory fresh and generate
     rm -rf "$home_dir/config/gentx" && mkdir -p "$home_dir/config/gentx"
-    dstchaind genesis gentx "$keyname" 100000000stake --chain-id dstchain --keyring-backend test --home "$home_dir" --from "$keyname" --output-document "$home_dir/config/gentx/gentx.json" >/dev/null 2>&1
+    dstchaind genesis gentx "$keyname" ${STAKE_SELF} --chain-id dstchain --keyring-backend test --home "$home_dir" --from "$keyname" --output-document "$home_dir/config/gentx/gentx.json" >/dev/null 2>&1
     dstchaind genesis collect-gentxs --home "$home_dir" >/dev/null 2>&1
 
     # If staking.validators still empty, patch genesis to include bonded validator
@@ -127,12 +133,10 @@ setup_dstchain_genesis() {
         valoper=$(jq -r '.app_state.genutil.gen_txs[0].body.messages[0].validator_address' "$home_dir/config/genesis.json")
         local cons_key
         cons_key=$(jq -r '.app_state.genutil.gen_txs[0].body.messages[0].pubkey.key' "$home_dir/config/genesis.json")
-        local power="100000000"
-        local shares="100000000.000000000000000000"
         jq --arg valoper "$valoper" \
            --arg conskey "$cons_key" \
-           --arg power "$power" \
-           --arg shares "$shares" \
+           --arg power "$STAKE_TOKENS" \
+           --arg shares "$STAKE_SHARES" \
            --arg del "$addr" \
            '.app_state.staking.validators = [
               {
@@ -153,7 +157,8 @@ setup_dstchain_genesis() {
               {"delegator_address": $del, "validator_address": $valoper, "shares": $shares}
             ]
             | .app_state.staking.last_total_power = $power
-            | .app_state.staking.last_validator_powers = [ {"address": $valoper, "power": $power} ]' "$home_dir/config/genesis.json" > "$home_dir/config/genesis.patched.json"
+            | .app_state.staking.last_validator_powers = [ {"address": $valoper, "power": $power} ]
+            | .app_state.bank.supply = [ {"denom":"stake","amount":"2000000000000000000"}, {"denom":"token","amount":"20000000"} ]' "$home_dir/config/genesis.json" > "$home_dir/config/genesis.patched.json"
         mv "$home_dir/config/genesis.patched.json" "$home_dir/config/genesis.json"
         success "Genesis patched"
     fi
