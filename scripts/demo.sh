@@ -19,7 +19,7 @@ ORGCHAIN_REST="http://localhost:1317"
 DSTCHAIN_REST="http://localhost:1319"
 SIGNER_PORT="8080"
 
-# Large amounts to satisfy power reduction
+# Large amounts to satisfy power reduction (kept for potential future direct starts)
 STAKE_FUND="2000000000000000000stake"
 STAKE_SELF="1000000000000000000stake"
 STAKE_TOKENS="1000000000000000000"
@@ -99,69 +99,19 @@ cleanup() {
 # Set up trap for cleanup
 trap cleanup EXIT
 
-# Setup a single-node validator genesis for dstchain
-setup_dstchain_genesis() {
-    local home_dir="$HOME/.dstchain"
-    local keyname="validator"
-
-    log "Initializing dstchain genesis..."
-    dstchaind init demo --chain-id dstchain --home "$home_dir" >/dev/null 2>&1 || true
-
-    if ! dstchaind keys show "$keyname" --keyring-backend test --home "$home_dir" >/dev/null 2>&1; then
-        dstchaind keys add "$keyname" --keyring-backend test --home "$home_dir" >/dev/null 2>&1
+# Patch dstchain app/config to use alternate ports
+patch_dstchain_ports() {
+    local home_dir="$HOME/.ignite-dstchain"
+    local cfg="$home_dir/config/config.toml"
+    local app="$home_dir/config/app.toml"
+    if [ -f "$cfg" ]; then
+        sed -i '' 's#^laddr = \"tcp://0.0.0.0:26657\"#laddr = \"tcp://127.0.0.1:26659\"#' "$cfg" || true
+        sed -i '' 's#^laddr = \"tcp://0.0.0.0:26656\"#laddr = \"tcp://0.0.0.0:26658\"#' "$cfg" || true
     fi
-
-    local addr
-    addr=$(dstchaind keys show "$keyname" -a --keyring-backend test --home "$home_dir")
-
-    # Ensure very high balance (append if exists)
-    dstchaind genesis add-genesis-account "$addr" ${STAKE_FUND},20000000token --home "$home_dir" --append >/dev/null 2>&1 || true
-
-    # Create gentx directory fresh and generate
-    rm -rf "$home_dir/config/gentx" && mkdir -p "$home_dir/config/gentx"
-    dstchaind genesis gentx "$keyname" ${STAKE_SELF} --chain-id dstchain --keyring-backend test --home "$home_dir" --from "$keyname" --output-document "$home_dir/config/gentx/gentx.json" >/dev/null 2>&1
-    dstchaind genesis collect-gentxs --home "$home_dir" >/dev/null 2>&1
-
-    # If staking.validators still empty, patch genesis to include bonded validator
-    local validators_count
-    validators_count=$(jq '.app_state.staking.validators | length' "$home_dir/config/genesis.json")
-    if [ "$validators_count" = "0" ]; then
-        log "Patching genesis to inject bonded validator..."
-        local valoper
-        valoper=$(jq -r '.app_state.genutil.gen_txs[0].body.messages[0].validator_address' "$home_dir/config/genesis.json")
-        local cons_key
-        cons_key=$(jq -r '.app_state.genutil.gen_txs[0].body.messages[0].pubkey.key' "$home_dir/config/genesis.json")
-        jq --arg valoper "$valoper" \
-           --arg conskey "$cons_key" \
-           --arg power "$STAKE_TOKENS" \
-           --arg shares "$STAKE_SHARES" \
-           --arg del "$addr" \
-           '.app_state.staking.validators = [
-              {
-                "operator_address": $valoper,
-                "consensus_pubkey": {"@type":"/cosmos.crypto.ed25519.PubKey","key": $conskey},
-                "jailed": false,
-                "status": "BOND_STATUS_BONDED",
-                "tokens": $power,
-                "delegator_shares": $shares,
-                "description": {"moniker":"demo","identity":"","website":"","security_contact":"","details":""},
-                "unbonding_height": "0",
-                "unbonding_time": "0001-01-01T00:00:00Z",
-                "commission": {"commission_rates": {"rate":"0.100000000000000000","max_rate":"0.200000000000000000","max_change_rate":"0.010000000000000000"}, "update_time":"0001-01-01T00:00:00Z"},
-                "min_self_delegation": "1"
-              }
-            ]
-            | .app_state.staking.delegations = [
-              {"delegator_address": $del, "validator_address": $valoper, "shares": $shares}
-            ]
-            | .app_state.staking.last_total_power = $power
-            | .app_state.staking.last_validator_powers = [ {"address": $valoper, "power": $power} ]
-            | .app_state.bank.supply = [ {"denom":"stake","amount":"2000000000000000000"}, {"denom":"token","amount":"20000000"} ]' "$home_dir/config/genesis.json" > "$home_dir/config/genesis.patched.json"
-        mv "$home_dir/config/genesis.patched.json" "$home_dir/config/genesis.json"
-        success "Genesis patched"
+    if [ -f "$app" ]; then
+        sed -i '' 's#^address = \"tcp://0.0.0.0:1317\"#address = \"tcp://0.0.0.0:1319\"#' "$app" || true
+        sed -i '' 's#^address = \"localhost:9090\"#address = \"0.0.0.0:9091\"#' "$app" || true
     fi
-
-    success "dstchain genesis initialized with single validator"
 }
 
 # Main demo function
@@ -245,19 +195,18 @@ main() {
     
     wait_for_service "$ORGCHAIN_RPC/health" "orgchain"
     
-    # Prepare and start dstchain on alternate ports
+    # Start dstchain using ignite with a separate home, then patch ports
     log "Starting dstchain..."
     cd dstchain
-    setup_dstchain_genesis
-    dstchaind start \
-      --home "$HOME/.dstchain" \
-      --with-comet \
-      --rpc.laddr tcp://127.0.0.1:26659 \
-      --p2p.laddr tcp://0.0.0.0:26658 \
-      --api.enable \
-      --api.address tcp://0.0.0.0:1319 \
-      --grpc.address 0.0.0.0:9091 \
-      --minimum-gas-prices 0.001stake &
+    ignite chain serve --reset-once --home "$HOME/.ignite-dstchain" --verbose=false &
+    DSTCHAIN_IGNITE_PID=$!
+    # wait a bit for files to exist then patch ports and restart
+    sleep 5
+    patch_dstchain_ports
+    # stop ignite-managed process and restart with patched configs
+    kill $DSTCHAIN_IGNITE_PID >/dev/null 2>&1 || true
+    sleep 2
+    dstchaind start --home "$HOME/.ignite-dstchain" &
     DSTCHAIN_PID=$!
     cd ..
     
