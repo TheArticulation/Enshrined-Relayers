@@ -93,26 +93,6 @@ cleanup() {
 # Set up trap for cleanup
 trap cleanup EXIT
 
-# Configure dstchain ports by editing config files
-configure_dstchain_ports() {
-    local home_dir="$HOME/.dstchain"
-    local cfg="$home_dir/config/config.toml"
-    local app="$home_dir/config/app.toml"
-
-    if [ ! -f "$cfg" ] || [ ! -f "$app" ]; then
-        return 1
-    fi
-
-    # config.toml (CometBFT)
-    sed -i '' 's#^laddr = ".*26657"#laddr = "tcp://127.0.0.1:26659"#' "$cfg" || true
-    sed -i '' 's#^laddr = ".*26656"#laddr = "tcp://127.0.0.1:26658"#' "$cfg" || true
-
-    # app.toml (API/GRPC)
-    sed -i '' 's#^address = ".*1317"#address = "tcp://0.0.0.0:1319"#' "$app" || true
-    sed -i '' 's#^address = ".*:9090"#address = "0.0.0.0:9091"#' "$app" || true
-    sed -i '' 's#^address = ".*:9091"#address = "0.0.0.0:9092"#' "$app" || true
-}
-
 # Main demo function
 main() {
     echo "=========================================="
@@ -194,16 +174,21 @@ main() {
     
     wait_for_service "$ORGCHAIN_RPC/health" "orgchain"
     
-    # Start dstchain on alternate ports without --port-prefix
+    # Start dstchain on alternate ports by flags
     log "Starting dstchain..."
     cd dstchain
-    # Initialize home if missing to create config files
     if [ ! -d "$HOME/.dstchain" ]; then
         dstchaind init demo --chain-id dstchain >/dev/null 2>&1 || true
     fi
-    configure_dstchain_ports || true
-    # Start directly with dstchaind to respect port changes
-    dstchaind start --home "$HOME/.dstchain" &
+    dstchaind start \
+      --home "$HOME/.dstchain" \
+      --with-comet \
+      --rpc.laddr tcp://127.0.0.1:26659 \
+      --p2p.laddr tcp://0.0.0.0:26658 \
+      --api.enable \
+      --api.address tcp://0.0.0.0:1319 \
+      --grpc.address 0.0.0.0:9091 \
+      --minimum-gas-prices 0.001stake &
     DSTCHAIN_PID=$!
     cd ..
     
