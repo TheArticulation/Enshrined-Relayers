@@ -99,7 +99,7 @@ cleanup() {
 # Set up trap for cleanup
 trap cleanup EXIT
 
-# Patch dstchain app/config to use alternate ports
+# Patch dstchain app/config to use alternate ports and set min gas price
 patch_dstchain_ports() {
     local home_dir="$HOME/.ignite-dstchain"
     local cfg="$home_dir/config/config.toml"
@@ -111,6 +111,12 @@ patch_dstchain_ports() {
     if [ -f "$app" ]; then
         sed -i '' 's#^address = \"tcp://0.0.0.0:1317\"#address = \"tcp://0.0.0.0:1319\"#' "$app" || true
         sed -i '' 's#^address = \"localhost:9090\"#address = \"0.0.0.0:9091\"#' "$app" || true
+        # set min gas price
+        if grep -q '^minimum-gas-prices' "$app"; then
+            sed -i '' 's#^minimum-gas-prices = ".*"#minimum-gas-prices = "0.001stake"#' "$app" || true
+        else
+            echo 'minimum-gas-prices = "0.001stake"' >> "$app"
+        fi
     fi
 }
 
@@ -206,7 +212,7 @@ main() {
     # stop ignite-managed process and restart with patched configs
     kill $DSTCHAIN_IGNITE_PID >/dev/null 2>&1 || true
     sleep 2
-    dstchaind start --home "$HOME/.ignite-dstchain" &
+    dstchaind start --home "$HOME/.ignite-dstchain" --minimum-gas-prices 0.001stake &
     DSTCHAIN_PID=$!
     cd ..
     
