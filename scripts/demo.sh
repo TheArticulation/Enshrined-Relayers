@@ -93,6 +93,33 @@ cleanup() {
 # Set up trap for cleanup
 trap cleanup EXIT
 
+# Setup a single-node validator genesis for dstchain
+setup_dstchain_genesis() {
+    local home_dir="$HOME/.dstchain"
+    local keyname="validator"
+
+    log "Initializing dstchain genesis..."
+    dstchaind init demo --chain-id dstchain --home "$home_dir" >/dev/null 2>&1 || true
+
+    if ! dstchaind keys show "$keyname" --keyring-backend test --home "$home_dir" >/dev/null 2>&1; then
+        dstchaind keys add "$keyname" --keyring-backend test --home "$home_dir" >/dev/null 2>&1
+    fi
+
+    local addr
+    addr=$(dstchaind keys show "$keyname" -a --keyring-backend test --home "$home_dir")
+
+    # Add generous balances
+    dstchaind add-genesis-account "$addr" 200000000stake,20000000token --home "$home_dir" >/dev/null 2>&1 || true
+
+    # Create a gentx if not already present
+    if [ ! -d "$home_dir/config/gentx" ] || [ -z "$(ls -A "$home_dir/config/gentx")" ]; then
+        dstchaind gentx "$keyname" 100000000stake --chain-id dstchain --keyring-backend test --home "$home_dir" >/dev/null 2>&1
+        dstchaind collect-gentxs --home "$home_dir" >/dev/null 2>&1
+    fi
+
+    success "dstchain genesis initialized with single validator"
+}
+
 # Main demo function
 main() {
     echo "=========================================="
@@ -174,12 +201,10 @@ main() {
     
     wait_for_service "$ORGCHAIN_RPC/health" "orgchain"
     
-    # Start dstchain on alternate ports by flags
+    # Prepare and start dstchain on alternate ports
     log "Starting dstchain..."
     cd dstchain
-    if [ ! -d "$HOME/.dstchain" ]; then
-        dstchaind init demo --chain-id dstchain >/dev/null 2>&1 || true
-    fi
+    setup_dstchain_genesis
     dstchaind start \
       --home "$HOME/.dstchain" \
       --with-comet \
