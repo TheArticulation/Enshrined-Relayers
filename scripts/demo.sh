@@ -114,10 +114,8 @@ setup_dstchain_genesis() {
     local addr
     addr=$(dstchaind keys show "$keyname" -a --keyring-backend test --home "$home_dir")
 
-    # Add generous balances
-    if ! jq -e --arg a "$addr" '.app_state.bank.balances[] | select(.address==$a)' "$home_dir/config/genesis.json" >/dev/null 2>&1; then
-        dstchaind genesis add-genesis-account "$addr" ${STAKE_FUND},20000000token --home "$home_dir" >/dev/null 2>&1 || true
-    fi
+    # Ensure very high balance (append if exists)
+    dstchaind genesis add-genesis-account "$addr" ${STAKE_FUND},20000000token --home "$home_dir" --append >/dev/null 2>&1 || true
 
     # Create gentx directory fresh and generate
     rm -rf "$home_dir/config/gentx" && mkdir -p "$home_dir/config/gentx"
