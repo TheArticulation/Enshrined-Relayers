@@ -1,5 +1,529 @@
 ---
-description: Use Ignite CLI for scaffolding blockchains.
-globs:
 alwaysApply: false
 ---
+
+0) Scope & Architecture
+
+Build two chains with Ignite: orgchain (origin) and dstchain (destination).
+
+Cosmos module: x/hyperlane on both chains providing:
+
+Mailbox (send-message)
+
+ISM verification (deliver)
+
+Valset snapshots (enshrined validators)
+
+Attestation-key registry (validator operator → attestation pubkey)
+
+Route nonces (replay protection)
+
+x/demo on dstchain receives OnHyperlaneMsg and writes visible state.
+
+Relayer (Node/TS) watches orgchain → gathers validator signatures → sends deliver to dstchain.
+
+Signing Daemon (Go) per validator: HTTP /sign over raw 32-byte digest with secp256k1 keys (MVP).
+
+1) Language, Versions, Tooling
+
+Go 1.22+, Cosmos SDK per Ignite default (v29+). No deprecated APIs.
+
+Node 18+ for relayer. TypeScript 5+. No experimental Node flags.
+
+Enforce formatting & linting:
+
+Go: gofmt, golangci-lint (errcheck, revive, gocritic, unparam).
+
+TS: eslint (typescript-eslint), prettier.
+
+Use Conventional Commits (feat:, fix:, refactor:, docs:). One logical change per commit.
+
+2) Folder Layout (must keep)
+/orgchain/              # Ignite chain (origin)
+/dstchain/              # Ignite chain (destination)
+/relayer/               # Node/TS relayer
+/signing-daemon/        # Go HTTP signer
+/docs/                  # README, ADRs, runbooks
+/scripts/               # init + demo scripts
+
+3) Module Boundaries (don’t leak concerns)
+
+x/hyperlane only handles: snapshots, mailbox, verification, dispatch.
+
+App logic lives in x/demo (dstchain). Never embed app logic in x/hyperlane.
+
+Keepers in x/hyperlane MUST NOT depend on x/demo types; use a minimal dispatcher interface.
+
+4) Protobuf & API Rules
+
+Never change field numbers once published. Add new fields at the end.
+
+Use uint64 for IDs/counters; bytes for digests/signatures; string for chain IDs/module names.
+
+Provide CLI & gRPC queries for:
+
+valset(valset_id)
+
+next-nonce(route)
+
+module Params
+
+Backwards compatibility: new params get sane defaults; migrations documented in /docs/ADR-*.
+
+5) Deterministic Encoding (critical)
+
+Canonical message digest order (exactly):
+
+OriginChainID (string)
+
+DestChainID (string)
+
+Nonce (uint64, big-endian 8 bytes)
+
+SenderModule (string)
+
+RecipientModule (string)
+
+Body (raw bytes)
+
+ValsetID (uint64, big-endian 8 bytes)
+
+Digest: sha256 over length-prefixed fields (uvarint length + bytes) in that order.
+
+Sort validator entries by operator address bytes ASC for snapshots and for bitmap ordering.
+
+Bitmap indexes correspond to that sorted order. Any deviation = reject.
+
+6) Snapshotting Rules (enshrined validators)
+
+Produce a new ValsetSnapshot on:
+
+Any validator set change or
+
+Every EpochLength blocks (param; default 100).
+
+Each snapshot includes: ID, Height, Hash, and (MVP) stored signers [operator, attestationPubKey, power].
+
+Hash = sha256 over concatenation of (operator | attestationPubKey | power) tuples, length-prefixed, sorted by operator bytes.
+
+If a validator hasn’t registered an attestation key, fallback to consensus pubkey for MVP.
+
+7) Attestation & Threshold
+
+MVP scheme: multisig with bitmap + individual secp256k1 signatures on the raw 32-byte digest (no prefixes).
+
+Threshold: ThresholdNumerator/ThresholdDenominator voting power (default 2/3).
+
+Verification must:
+
+Fail fast on malformed sizes (bitmap, sig count, body > MaxBodyBytes).
+
+For each set bit, verify signature matches the corresponding attestation key.
+
+Sum voting power of valid signatures; compare to threshold.
+
+Reject if any signature indexes are out of range, duplicated, or mismatched.
+
+8) Replay Protection & Nonces
+
+Route string = "<origin>|<dest>|<recipientModule>".
+
+NextNonce(route) starts at 0 and increments on send.
+
+Deliver checks: nonce == (NextNonce(route) - 1) and (origin|dest|recipient|nonce) not yet consumed.
+
+Mark consumed only after successful dispatch.
+
+9) Events & Telemetry (stable names)
+
+hyperlane_send: route, nonce, valset_id, digest_hex, recipient_module
+
+valset_snapshot: id, height, hash_hex
+
+hyperlane_deliver: route, nonce, valset_id, met_quorum=bool
+
+demo_received: payload_hash_hex
+
+Prometheus counters (optional later): messages queued/delivered, quorum failures.
+
+10) Params (both chains’ x/hyperlane)
+
+EpochLength (uint64, default 100)
+
+ThresholdNumerator (int64, default 2)
+
+ThresholdDenominator (int64, default 3)
+
+MaxBodyBytes (uint64, default 32768)
+
+Validate: denominators > 0; numerator < denominator; sane bounds (MaxBodyBytes ≤ 1MB).
+
+11) Gas & Safety
+
+O(1) state checks before signature verification.
+
+Reject early on oversized proofs or bodies.
+
+No panics in keeper code. Return explicit errors with codes.InvalidArgument/codes.Unauthenticated/codes.Aborted.
+
+12) Relayer Rules (TS)
+
+Pure consumer; never mutates orgchain.
+
+Canonicalize exactly as Go does (shared spec).
+
+Construct bitmap from snapshot sorted order; zero-pad to bytes.
+
+Retry policy: exponential backoff; idempotent submit.
+
+No secret keys in repo; use .env for endpoints and mnemonic of relayer account on dstchain.
+
+13) Signing Daemon Rules (Go)
+
+HTTP POST /sign {operatorBech32, digestHex} → base64 signature.
+
+Keys stored locally in keys.json (operator → secp256k1 private key, dev only).
+
+Deterministic signing over raw digest; no extra domain tags in MVP.
+
+Return 400 for unknown operator or bad input; never panic.
+
+14) Testing & DoD
+
+Unit tests (orgchain):
+
+Snapshot increments at epoch heights and on validator change.
+
+Quorum math with powers [30,30,20,20]: 3 sign → pass, 2 sign → fail.
+
+Replay: duplicate deliver rejected.
+
+E2E script (make demo):
+
+Boots both chains, registers 2–4 validator keys, sends one message, relayer delivers, x/demo state updated.
+
+CI must run: go build, go test ./..., eslint, tsc --noEmit.
+
+15) Documentation (must ship)
+
+/docs/README.md: quickstart, ports, commands, demo flow.
+
+/docs/ADR-01-enshrined-validators.md: design, security assumptions, alternatives (BLS/optimistic), future slashing.
+
+/docs/validator-runbook.md: register key, run signing-daemon, rotate keys.
+
+16) Cursor-Specific Working Rules
+
+Never rename modules, packages, or folders unless the prompt explicitly says so.
+
+If a file is missing, create it with minimal compilable stubs; do not delete existing code.
+
+When asked to “implement,” replace TODOs only; preserve function signatures and imports.
+
+When changing canonicalization or params, update docs and relayer code in the same PR.
+
+Output diffs or full file contents — avoid vague “apply this patch” without code.
+
+17) What NOT to do
+
+Don’t introduce third-party crypto libs unless required; prefer std + Cosmos tooling.
+
+Don’t use reflection or unsafe in critical paths.
+
+Don’t silently change proto field numbers or orders.
+
+Don’t perform on-chain aggregation (BLS/TSS) in MVP — keep off-chain aggregation simple.
+
+18) Future Work (document but don’t implement without instruction)
+
+BLS aggregate signatures (single on-chain verify).
+
+Slashing/evidence format for invalid attestations.
+
+Optimistic ISM with challenge window.
+
+EVM-side EnshrinedValidatorsISM contract.
+
+Ready-to-use Acceptance Checklist (per task)
+
+Build succeeds (ignite chain build / ignite chain serve) no panics.
+
+Lint clean (Go/TS).
+
+Tests updated and passing.
+
+Events emitted with specified names/attrs.
+
+Docs updated when public interfaces change (proto, params, digest rules).
+
+Minimal Canonicalization (copy for both Go & TS)
+
+Length-prefix each field: uvarint(len) || bytes.
+
+For uint64 fields: encode big-endian fixed 8 bytes (no varint) before length prefix.
+
+sha256 over concatenation in field order (see §5).
+
+Validator ordering: sort by []byte(operator) ascending; bitmap index = position.0) Scope & Architecture
+
+Build two chains with Ignite: orgchain (origin) and dstchain (destination).
+
+Cosmos module: x/hyperlane on both chains providing:
+
+Mailbox (send-message)
+
+ISM verification (deliver)
+
+Valset snapshots (enshrined validators)
+
+Attestation-key registry (validator operator → attestation pubkey)
+
+Route nonces (replay protection)
+
+x/demo on dstchain receives OnHyperlaneMsg and writes visible state.
+
+Relayer (Node/TS) watches orgchain → gathers validator signatures → sends deliver to dstchain.
+
+Signing Daemon (Go) per validator: HTTP /sign over raw 32-byte digest with secp256k1 keys (MVP).
+
+1) Language, Versions, Tooling
+
+Go 1.22+, Cosmos SDK per Ignite default (v29+). No deprecated APIs.
+
+Node 18+ for relayer. TypeScript 5+. No experimental Node flags.
+
+Enforce formatting & linting:
+
+Go: gofmt, golangci-lint (errcheck, revive, gocritic, unparam).
+
+TS: eslint (typescript-eslint), prettier.
+
+Use Conventional Commits (feat:, fix:, refactor:, docs:). One logical change per commit.
+
+2) Folder Layout (must keep)
+/orgchain/              # Ignite chain (origin)
+/dstchain/              # Ignite chain (destination)
+/relayer/               # Node/TS relayer
+/signing-daemon/        # Go HTTP signer
+/docs/                  # README, ADRs, runbooks
+/scripts/               # init + demo scripts
+
+3) Module Boundaries (don’t leak concerns)
+
+x/hyperlane only handles: snapshots, mailbox, verification, dispatch.
+
+App logic lives in x/demo (dstchain). Never embed app logic in x/hyperlane.
+
+Keepers in x/hyperlane MUST NOT depend on x/demo types; use a minimal dispatcher interface.
+
+4) Protobuf & API Rules
+
+Never change field numbers once published. Add new fields at the end.
+
+Use uint64 for IDs/counters; bytes for digests/signatures; string for chain IDs/module names.
+
+Provide CLI & gRPC queries for:
+
+valset(valset_id)
+
+next-nonce(route)
+
+module Params
+
+Backwards compatibility: new params get sane defaults; migrations documented in /docs/ADR-*.
+
+5) Deterministic Encoding (critical)
+
+Canonical message digest order (exactly):
+
+OriginChainID (string)
+
+DestChainID (string)
+
+Nonce (uint64, big-endian 8 bytes)
+
+SenderModule (string)
+
+RecipientModule (string)
+
+Body (raw bytes)
+
+ValsetID (uint64, big-endian 8 bytes)
+
+Digest: sha256 over length-prefixed fields (uvarint length + bytes) in that order.
+
+Sort validator entries by operator address bytes ASC for snapshots and for bitmap ordering.
+
+Bitmap indexes correspond to that sorted order. Any deviation = reject.
+
+6) Snapshotting Rules (enshrined validators)
+
+Produce a new ValsetSnapshot on:
+
+Any validator set change or
+
+Every EpochLength blocks (param; default 100).
+
+Each snapshot includes: ID, Height, Hash, and (MVP) stored signers [operator, attestationPubKey, power].
+
+Hash = sha256 over concatenation of (operator | attestationPubKey | power) tuples, length-prefixed, sorted by operator bytes.
+
+If a validator hasn’t registered an attestation key, fallback to consensus pubkey for MVP.
+
+7) Attestation & Threshold
+
+MVP scheme: multisig with bitmap + individual secp256k1 signatures on the raw 32-byte digest (no prefixes).
+
+Threshold: ThresholdNumerator/ThresholdDenominator voting power (default 2/3).
+
+Verification must:
+
+Fail fast on malformed sizes (bitmap, sig count, body > MaxBodyBytes).
+
+For each set bit, verify signature matches the corresponding attestation key.
+
+Sum voting power of valid signatures; compare to threshold.
+
+Reject if any signature indexes are out of range, duplicated, or mismatched.
+
+8) Replay Protection & Nonces
+
+Route string = "<origin>|<dest>|<recipientModule>".
+
+NextNonce(route) starts at 0 and increments on send.
+
+Deliver checks: nonce == (NextNonce(route) - 1) and (origin|dest|recipient|nonce) not yet consumed.
+
+Mark consumed only after successful dispatch.
+
+9) Events & Telemetry (stable names)
+
+hyperlane_send: route, nonce, valset_id, digest_hex, recipient_module
+
+valset_snapshot: id, height, hash_hex
+
+hyperlane_deliver: route, nonce, valset_id, met_quorum=bool
+
+demo_received: payload_hash_hex
+
+Prometheus counters (optional later): messages queued/delivered, quorum failures.
+
+10) Params (both chains’ x/hyperlane)
+
+EpochLength (uint64, default 100)
+
+ThresholdNumerator (int64, default 2)
+
+ThresholdDenominator (int64, default 3)
+
+MaxBodyBytes (uint64, default 32768)
+
+Validate: denominators > 0; numerator < denominator; sane bounds (MaxBodyBytes ≤ 1MB).
+
+11) Gas & Safety
+
+O(1) state checks before signature verification.
+
+Reject early on oversized proofs or bodies.
+
+No panics in keeper code. Return explicit errors with codes.InvalidArgument/codes.Unauthenticated/codes.Aborted.
+
+12) Relayer Rules (TS)
+
+Pure consumer; never mutates orgchain.
+
+Canonicalize exactly as Go does (shared spec).
+
+Construct bitmap from snapshot sorted order; zero-pad to bytes.
+
+Retry policy: exponential backoff; idempotent submit.
+
+No secret keys in repo; use .env for endpoints and mnemonic of relayer account on dstchain.
+
+13) Signing Daemon Rules (Go)
+
+HTTP POST /sign {operatorBech32, digestHex} → base64 signature.
+
+Keys stored locally in keys.json (operator → secp256k1 private key, dev only).
+
+Deterministic signing over raw digest; no extra domain tags in MVP.
+
+Return 400 for unknown operator or bad input; never panic.
+
+14) Testing & DoD
+
+Unit tests (orgchain):
+
+Snapshot increments at epoch heights and on validator change.
+
+Quorum math with powers [30,30,20,20]: 3 sign → pass, 2 sign → fail.
+
+Replay: duplicate deliver rejected.
+
+E2E script (make demo):
+
+Boots both chains, registers 2–4 validator keys, sends one message, relayer delivers, x/demo state updated.
+
+CI must run: go build, go test ./..., eslint, tsc --noEmit.
+
+15) Documentation (must ship)
+
+/docs/README.md: quickstart, ports, commands, demo flow.
+
+/docs/ADR-01-enshrined-validators.md: design, security assumptions, alternatives (BLS/optimistic), future slashing.
+
+/docs/validator-runbook.md: register key, run signing-daemon, rotate keys.
+
+16) Cursor-Specific Working Rules
+
+Never rename modules, packages, or folders unless the prompt explicitly says so.
+
+If a file is missing, create it with minimal compilable stubs; do not delete existing code.
+
+When asked to “implement,” replace TODOs only; preserve function signatures and imports.
+
+When changing canonicalization or params, update docs and relayer code in the same PR.
+
+Output diffs or full file contents — avoid vague “apply this patch” without code.
+
+17) What NOT to do
+
+Don’t introduce third-party crypto libs unless required; prefer std + Cosmos tooling.
+
+Don’t use reflection or unsafe in critical paths.
+
+Don’t silently change proto field numbers or orders.
+
+Don’t perform on-chain aggregation (BLS/TSS) in MVP — keep off-chain aggregation simple.
+
+18) Future Work (document but don’t implement without instruction)
+
+BLS aggregate signatures (single on-chain verify).
+
+Slashing/evidence format for invalid attestations.
+
+Optimistic ISM with challenge window.
+
+EVM-side EnshrinedValidatorsISM contract.
+
+Ready-to-use Acceptance Checklist (per task)
+
+Build succeeds (ignite chain build / ignite chain serve) no panics.
+
+Lint clean (Go/TS).
+
+Tests updated and passing.
+
+Events emitted with specified names/attrs.
+
+Docs updated when public interfaces change (proto, params, digest rules).
+
+Minimal Canonicalization (copy for both Go & TS)
+
+Length-prefix each field: uvarint(len) || bytes.
+
+For uint64 fields: encode big-endian fixed 8 bytes (no varint) before length prefix.
+
+sha256 over concatenation in field order (see §5).
+
+Validator ordering: sort by []byte(operator) ascending; bitmap index = position.
