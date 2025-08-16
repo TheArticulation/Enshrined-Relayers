@@ -120,12 +120,21 @@ start_orgchain_direct() {
     local cfg="$home_dir/config/config.toml"
     local app="$home_dir/config/app.toml"
     if [ -f "$cfg" ]; then
-        sed -i '' 's#^laddr = \"tcp://0.0.0.0:26657\"#laddr = \"tcp://127.0.0.1:26659\"#' "$cfg" || true
-        sed -i '' 's#^laddr = \"tcp://0.0.0.0:26656\"#laddr = \"tcp://0.0.0.0:26658\"#' "$cfg" || true
+        # RPC
+        sed -i '' 's#laddr = "tcp://127.0.0.1:26657"#laddr = "tcp://127.0.0.1:26659"#' "$cfg" || true
+        sed -i '' 's#laddr = "tcp://0.0.0.0:26657"#laddr = "tcp://127.0.0.1:26659"#' "$cfg" || true
+        # P2P
+        sed -i '' 's#laddr = "tcp://0.0.0.0:26656"#laddr = "tcp://0.0.0.0:26658"#' "$cfg" || true
+        # Proxy app
+        sed -i '' 's#proxy_app = "tcp://127.0.0.1:26658"#proxy_app = "tcp://127.0.0.1:26660"#' "$cfg" || true
+        # pprof
+        sed -i '' 's#pprof_laddr = "127.0.0.1:6060"#pprof_laddr = "127.0.0.1:6061"#' "$cfg" || true
     fi
     if [ -f "$app" ]; then
-        sed -i '' 's#^address = \"tcp://0.0.0.0:1317\"#address = \"tcp://0.0.0.0:1319\"#' "$app" || true
-        sed -i '' 's#^address = \"localhost:9090\"#address = \"0.0.0.0:9091\"#' "$app" || true
+        # API and GRPC
+        sed -i '' 's#address = "tcp://0.0.0.0:1317"#address = "tcp://0.0.0.0:1319"#' "$app" || true
+        sed -i '' 's#address = "localhost:9090"#address = "0.0.0.0:9091"#' "$app" || true
+        # Set min gas price
         if grep -q '^minimum-gas-prices' "$app"; then
             sed -i '' 's#^minimum-gas-prices = ".*"#minimum-gas-prices = "0.001stake"#' "$app" || true
         else
